@@ -7,6 +7,7 @@
 enum shb_led_id {
 	SHB_LED_TEMP = 0,
 	SHB_LED_BMI,
+	SHB_LED_HEART,
 	SHB_LED_COUNT,
 };
 
