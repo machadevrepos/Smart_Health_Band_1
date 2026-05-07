@@ -4,7 +4,16 @@
 
 / {
 	zephyr,user {
-		max32664-rstn-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
+		/*
+		 * MAX32664D RSTN is tied to the shared board RSTN / BMD-350
+		 * RESET_N domain. Do not map P0.21 as a firmware-driven GPIO.
+		 *
+		 * The current MAX32664 driver still expects a rstn-gpios property
+		 * at build time, so P0.17 is used here as a no-connect compatibility
+		 * placeholder until the driver is refactored to remove RSTN GPIO
+		 * ownership completely.
+		 */
+		max32664-rstn-gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
 		max32664-mfio-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
 		haptic-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
 	};
@@ -12,6 +21,7 @@
 	aliases {
 		tmp-led = &tmp_led;
 		bmi-led = &bmi_led;
+		heart-led = &heart_led;
 	};
 
 	leds {
@@ -25,6 +35,11 @@
 		bmi_led: bmi-led {
 			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
 			label = "BMI270 LED";
+		};
+
+		heart_led: heart-led {
+			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			label = "MAX32664 Biometric LED";
 		};
 	};
 };
