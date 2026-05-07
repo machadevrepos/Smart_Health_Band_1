@@ -8,7 +8,7 @@ Firmware for the Smart Health Band prototype built on `nrf52dk_nrf52832` with Ze
 - Uses the BMI270 for wake-on-motion plus tap and double-tap gesture detection.
 - Runs a MAX32664 session for heart rate, SpO2, and blood-pressure-style output.
 - Publishes temperature, event, and vitals data over a custom BLE GATT service.
-- Drives local UI feedback with LEDs and a haptic motor.
+- Drives local UI feedback with dedicated temperature, motion, and biometric LEDs plus a haptic motor.
 - Stores MAX32664 calibration data in flash using NVS so later boots can skip full recalibration when valid data already exists.
 
 ## Hardware Summary
@@ -22,18 +22,19 @@ Firmware for the Smart Health Band prototype built on `nrf52dk_nrf52832` with Ze
 
 ### Key Pins
 
-| Signal | Pin |
-|---|---|
-| I2C SCL | P0.00 |
-| I2C SDA | P0.04 |
-| BMI270 INT1 | P0.31 |
-| BMI270 INT2 | P0.30 |
-| TMP117 ALERT | P0.11 |
-| TMP LED | P0.08 |
-| BMI / vitals LED | P0.13 |
-| MAX32664 RSTN | P0.21 |
-| MAX32664 MFIO | P0.07 |
-| Haptic motor gate | P0.06 |
+| Signal | Pin | Firmware note |
+|---|---|---|
+| I2C SCL | P0.00 | Main shared I2C bus |
+| I2C SDA | P0.04 | Main shared I2C bus |
+| BMI270 INT1 | P0.31 | Any-motion / gesture wake input |
+| BMI270 INT2 | P0.30 | Reserved BMI270 interrupt input |
+| TMP117 ALERT | P0.11 | Temperature alert / data-ready input |
+| TMP LED | P0.08 | Temperature activity LED |
+| BMI LED | P0.13 | BMI270 / motion status LED |
+| HEART LED | P0.12 | MAX32664 / biometric status LED |
+| MAX32664 MFIO | P0.07 | Direct hub control / wake / interrupt-capable line |
+| MAX32664 RSTN | Shared RSTN domain | Not firmware-driven; do not use BMD-350 P0.21 as a normal GPIO |
+| Haptic motor gate | P0.06 | Active-low GPIO in the overlay; verify motor polarity on hardware |
 
 ### I2C Devices
 
@@ -43,11 +44,15 @@ Firmware for the Smart Health Band prototype built on `nrf52dk_nrf52832` with Ze
 | BMI270 | `0x68` |
 | MAX32664D | `0x55` |
 
+### MAX32664 Reset Note
+
+The MAX32664D reset pin is tied to the shared board reset domain, which also involves the BMD-350 `RESET_N` line. Firmware must not drive `P0.21` as a normal GPIO. The current board overlay keeps a dummy no-connect `max32664-rstn-gpios` placeholder only because the existing driver still expects that property at build time. The real firmware-controlled MAX32664 pin is `MFIO` on `P0.07`.
+
 ## Firmware Architecture
 
 ### `src/main.c`
 
-Coordinates startup, launches BLE and sensor modules, starts the MAX32664 session, and runs the main polling loop. Temperature is sampled on the poll interval, while BMI270 gesture wakes and MAX32664 vitals events are handled asynchronously through the power-event layer.
+Coordinates startup, launches BLE and sensor modules, starts the MAX32664 session, and runs the main polling loop. Temperature is sampled on the poll interval, while BMI270 gesture wakes and MAX32664 vitals events are handled asynchronously through the power-event layer. Biometric updates now pulse the dedicated HEART LED.
 
 ### `src/ble.c`
 
@@ -65,7 +70,7 @@ Configures the BMI270 through Zephyr's sensor API, arms the any-motion interrupt
 
 ### `src/max32664.c`
 
-Handles hub reset, runtime-mode entry, firmware version probe, calibration persistence, first-boot calibration, and ongoing vitals estimation. If estimation stops unexpectedly, the module attempts to recover and restart the session.
+Handles hub runtime-mode entry, firmware version probe, calibration persistence, first-boot calibration, and ongoing vitals estimation. If estimation stops unexpectedly, the module attempts to recover and restart the session. Reset handling must remain shared-reset-aware for this PCB revision.
 
 ### `src/tmp117.c`
 
@@ -76,7 +81,8 @@ Performs raw temperature reads and converts the TMP117 register value into Zephy
 Owns the local user-feedback outputs used by the firmware today:
 
 - TMP LED pulse on temperature sample
-- BMI LED pulse on vitals update
+- BMI LED support for motion/status feedback
+- HEART LED pulse on biometric/vitals update
 - Haptic alert start/stop
 - Haptic feedback pulse for double-tap confirmation
 
