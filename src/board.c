@@ -22,6 +22,9 @@ static struct shb_led_ctx shb_leds[SHB_LED_COUNT] = {
 	[SHB_LED_BMI] = {
 		.spec = GPIO_DT_SPEC_GET_OR(DT_ALIAS(bmi_led), gpios, { 0 }),
 	},
+	[SHB_LED_HEART] = {
+		.spec = GPIO_DT_SPEC_GET_OR(DT_ALIAS(heart_led), gpios, { 0 }),
+	},
 };
 
 static const struct gpio_dt_spec shb_haptic_spec =
@@ -60,6 +63,7 @@ int shb_board_init(void)
 	for (size_t i = 0; i < SHB_LED_COUNT; ++i) {
 		k_work_init_delayable(&shb_leds[i].off_work, shb_led_off_work);
 		if (!gpio_is_ready_dt(&shb_leds[i].spec)) {
+			LOG_WRN("LED %u GPIO not ready or not present", (unsigned int)i);
 			continue;
 		}
 
