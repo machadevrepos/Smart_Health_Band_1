@@ -1,91 +1,39 @@
-#include <stdio.h>
+#include <errno.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include "ble.h"
-#include "board.h"
-#include "bmi270.h"
-#include "max32664.h"
-#include "power.h"
-#include "tmp117.h"
+#include "shb/ble.h"
+#include "shb/board.h"
+#include "shb/bmi270.h"
+#include "shb/max32664.h"
+#include "shb/power.h"
+#include "shb/tmp117.h"
 
 LOG_MODULE_REGISTER(shb_main, CONFIG_SHB_LOG_LEVEL);
 
-static int32_t shb_last_temp_mc;
-static bool shb_have_temp;
-static uint32_t shb_last_gesture_events;
-static int64_t shb_last_gesture_ms;
+struct shb_sensor_fmt {
+	const char *sign;
+	uint32_t whole;
+	uint32_t frac;
+};
 
-static const char *shb_motion_label(const struct shb_bmi270_motion_state *motion)
+static struct shb_sensor_fmt shb_sensor_fmt_4(const struct sensor_value *value)
 {
-	if (motion->significant_active) {
-		return "SIG. MOTION";
-	}
+	int64_t micro = ((int64_t)value->val1 * 1000000LL) + value->val2;
+	uint64_t abs_micro = (micro < 0) ? (uint64_t)(-micro) : (uint64_t)micro;
+	struct shb_sensor_fmt formatted = {
+		.sign = (micro < 0) ? "-" : "",
+		.whole = (uint32_t)(abs_micro / 1000000ULL),
+		.frac = (uint32_t)((abs_micro % 1000000ULL) / 100ULL),
+	};
 
-	return motion->moving ? "MOTION" : "IDLE";
+	return formatted;
 }
 
-static const char *shb_gesture_label(void)
-{
-	if ((shb_last_gesture_events == 0U) ||
-	    ((k_uptime_get() - shb_last_gesture_ms) > 2000)) {
-		return "NONE";
-	}
-
-	if ((shb_last_gesture_events & SHB_BMI270_EVENT_DOUBLE_TAP) != 0U) {
-		return "TAP_DOUBLE";
-	}
-
-	if ((shb_last_gesture_events & SHB_BMI270_EVENT_TAP) != 0U) {
-		return "TAP_SINGLE";
-	}
-
-	return "NONE";
-}
-
-static void shb_log_snapshot(const char *reason)
-{
-	struct shb_bmi270_motion_state motion = { 0 };
-	struct shb_max32664_result latest = { 0 };
-	char temp_buf[16] = "--";
-	char hr_buf[16] = "--";
-	char spo2_buf[16] = "--";
-	char bp_buf[16] = "--";
-
-	if (shb_have_temp) {
-		int32_t temp_mc = shb_last_temp_mc;
-		int32_t abs_mc = (temp_mc < 0) ? -temp_mc : temp_mc;
-
-		(void)snprintf(temp_buf, sizeof(temp_buf), "%s%d.%02d C",
-			       (temp_mc < 0) ? "-" : "",
-			       abs_mc / 1000, (abs_mc % 1000) / 10);
-	}
-
-	if (shb_bmi270_is_ready()) {
-		shb_bmi270_get_motion_state(&motion);
-	}
-
-	shb_max32664_get_latest(&latest);
-	if (latest.valid) {
-		(void)snprintf(hr_buf, sizeof(hr_buf), "%u.%u bpm",
-			       (unsigned int)(latest.hr_x10 / 10U),
-			       (unsigned int)(latest.hr_x10 % 10U));
-		(void)snprintf(spo2_buf, sizeof(spo2_buf), "%u.%u%%",
-			       (unsigned int)(latest.spo2_x10 / 10U),
-			       (unsigned int)(latest.spo2_x10 % 10U));
-		(void)snprintf(bp_buf, sizeof(bp_buf), "%u/%u mmHg",
-			       (unsigned int)latest.sys_bp,
-			       (unsigned int)latest.dia_bp);
-	}
-
-	LOG_INF("Status (%s): Temp=%s | Motion=%s | Gesture=%s | HR=%s | SpO2=%s | BP=%s",
-		reason, temp_buf, shb_motion_label(&motion), shb_gesture_label(),
-		hr_buf, spo2_buf, bp_buf);
-}
-
-static void shb_update_temperature(void)
+static void shb_log_temperature(void)
 {
 	struct sensor_value temp;
+	struct shb_sensor_fmt formatted;
 	int ret = shb_tmp117_read_temperature(&temp);
 
 	if (ret < 0) {
@@ -93,38 +41,71 @@ static void shb_update_temperature(void)
 		return;
 	}
 
+	formatted = shb_sensor_fmt_4(&temp);
 	(void)shb_board_led_pulse(SHB_LED_TEMP, K_MSEC(50));
-	int32_t temp_mc = (int32_t)(temp.val1 * 1000 + temp.val2 / 1000);
-
-	shb_last_temp_mc = temp_mc;
-	shb_have_temp = true;
-	shb_ble_notify_temperature(temp_mc);
+	(void)shb_ble_notify_temperature(&temp);
+	LOG_INF("TMP117: %s%u.%04u C",
+		formatted.sign,
+		(unsigned int)formatted.whole,
+		(unsigned int)formatted.frac);
 }
 
 static void shb_bmi270_irq_wake_cb(void)
 {
-	shb_power_signal(SHB_POWER_EVENT_BMI_WAKE);
+	shb_power_signal(SHB_POWER_EVENT_BMI_MOTION);
 }
 
-static bool shb_poll_bmi270(void)
+static void shb_log_bmi270(void)
 {
-	/*
-	 * Per product spec (Samuel, PoC): no motion/wrist-raise/significant-motion
-	 * BLE events — taps are the only gesture. We still run the accel through
-	 * shb_bmi270_process_motion() to refresh the internal idle/moving state
-	 * used by the snapshot logger, but do not publish those events anywhere.
-	 */
 	struct shb_bmi270_sample sample;
 	struct shb_bmi270_motion_state motion;
+	struct shb_sensor_fmt accel_x;
+	struct shb_sensor_fmt accel_y;
+	struct shb_sensor_fmt accel_z;
+	struct shb_sensor_fmt gyro_x;
+	struct shb_sensor_fmt gyro_y;
+	struct shb_sensor_fmt gyro_z;
 	int ret = shb_bmi270_read_sample(&sample);
 
 	if (ret < 0) {
-		LOG_ERR("BMI270 read failed: %d", ret);
-		return false;
+		LOG_ERR("BMI270 sample read failed: %d", ret);
+		return;
 	}
 
 	(void)shb_bmi270_process_motion(&sample, &motion);
-	return false;
+	(void)shb_ble_notify_motion(&motion);
+
+	accel_x = shb_sensor_fmt_4(&sample.accel_xyz[0]);
+	accel_y = shb_sensor_fmt_4(&sample.accel_xyz[1]);
+	accel_z = shb_sensor_fmt_4(&sample.accel_xyz[2]);
+	gyro_x = shb_sensor_fmt_4(&sample.gyro_xyz[0]);
+	gyro_y = shb_sensor_fmt_4(&sample.gyro_xyz[1]);
+	gyro_z = shb_sensor_fmt_4(&sample.gyro_xyz[2]);
+
+	LOG_INF("BMI270 accel: X=%s%u.%04u Y=%s%u.%04u Z=%s%u.%04u m/s^2 | gyro: X=%s%u.%04u Y=%s%u.%04u Z=%s%u.%04u dps | state=%s accel-delta=%u mg gyro-peak=%u mdps",
+		accel_x.sign, (unsigned int)accel_x.whole, (unsigned int)accel_x.frac,
+		accel_y.sign, (unsigned int)accel_y.whole, (unsigned int)accel_y.frac,
+		accel_z.sign, (unsigned int)accel_z.whole, (unsigned int)accel_z.frac,
+		gyro_x.sign, (unsigned int)gyro_x.whole, (unsigned int)gyro_x.frac,
+		gyro_y.sign, (unsigned int)gyro_y.whole, (unsigned int)gyro_y.frac,
+		gyro_z.sign, (unsigned int)gyro_z.whole, (unsigned int)gyro_z.frac,
+		motion.moving ? "moving" : "still",
+		(unsigned int)motion.accel_delta_mg,
+		(unsigned int)motion.gyro_peak_mdps);
+
+	if ((motion.events & SHB_BMI270_EVENT_MOTION) != 0U) {
+		(void)shb_board_led_pulse(SHB_LED_BMI, K_MSEC(50));
+		LOG_INF("BMI270 motion detected");
+	}
+
+	if ((motion.events & SHB_BMI270_EVENT_SIGNIFICANT_MOTION) != 0U) {
+		(void)shb_board_led_pulse(SHB_LED_BMI, K_MSEC(120));
+		LOG_INF("BMI270 significant motion detected");
+	}
+
+	if ((motion.events & SHB_BMI270_EVENT_NO_MOTION) != 0U) {
+		LOG_INF("BMI270 no-motion detected");
+	}
 }
 
 static void shb_handle_max32664_vitals_event(void)
@@ -132,56 +113,19 @@ static void shb_handle_max32664_vitals_event(void)
 	struct shb_max32664_result latest = { 0 };
 
 	shb_max32664_get_latest(&latest);
+	(void)shb_ble_notify_vitals(&latest);
 	if (latest.valid) {
 		(void)shb_board_led_pulse(SHB_LED_HEART, K_MSEC(60));
-		shb_ble_notify_vitals(latest.hr_x10, latest.spo2_x10,
-				      latest.sys_bp, latest.dia_bp);
-		shb_log_snapshot("vitals");
 	}
 }
 
-static void shb_handle_power_events(k_timeout_t timeout)
+static void shb_handle_power_events(void)
 {
-	uint32_t events = shb_power_wait_for_wake(timeout);
+	uint32_t events = shb_power_wait_for_wake(K_NO_WAIT);
 
-	if ((events & SHB_POWER_EVENT_BMI_GESTURE) != 0U) {
-		uint32_t gestures = shb_bmi270_consume_gesture_events();
-
-		if (gestures != 0U) {
-			/*
-			 * Product spec (Samuel):
-			 *   Single tap + alert active -> stop vibration,
-			 *                                send ALERT_ACKNOWLEDGED
-			 *   Single tap + idle         -> send TAP_SINGLE (no haptic)
-			 *   Double tap                -> medium feedback haptic,
-			 *                                send TAP_DOUBLE
-			 * Double-tap is checked first because its bit coexists with
-			 * any pending TAP bit that survived in the atomic.
-			 */
-			const char *event_name = NULL;
-
-			if ((gestures & SHB_BMI270_EVENT_DOUBLE_TAP) != 0U) {
-				LOG_INF("Gesture: TAP_DOUBLE");
-				(void)shb_board_haptic_feedback_pulse(K_MSEC(80));
-				event_name = "TAP_DOUBLE";
-			} else if ((gestures & SHB_BMI270_EVENT_TAP) != 0U) {
-				if (shb_board_haptic_alert_is_active()) {
-					LOG_INF("Gesture: TAP_SINGLE during alert -> ALERT_ACKNOWLEDGED");
-					(void)shb_board_haptic_alert_stop();
-					event_name = "ALERT_ACKNOWLEDGED";
-				} else {
-					LOG_INF("Gesture: TAP_SINGLE");
-					event_name = "TAP_SINGLE";
-				}
-			}
-
-			shb_last_gesture_events = gestures;
-			shb_last_gesture_ms = k_uptime_get();
-			if (event_name != NULL) {
-				shb_ble_notify_event(event_name);
-			}
-			shb_log_snapshot("gesture");
-		}
+	if ((events & SHB_POWER_EVENT_BMI_MOTION) != 0U) {
+		LOG_INF("BMI270 INT1 any-motion interrupt observed");
+		(void)shb_board_led_pulse(SHB_LED_BMI, K_MSEC(40));
 	}
 
 	if ((events & SHB_POWER_EVENT_MAX32664_VITALS) != 0U) {
@@ -193,36 +137,40 @@ int main(void)
 {
 	int ret;
 	bool max_session_enabled = false;
-	const int64_t poll_interval_ms = CONFIG_SHB_SENSOR_POLL_INTERVAL_MS;
-	int64_t next_poll_ms;
+
+	LOG_INF("Smart Health Band critical-fix runtime boot");
 
 	ret = shb_board_init();
 	if (ret < 0) {
-		LOG_ERR("Board init failed: %d", ret);
+		LOG_ERR("Board initialization failed: %d", ret);
 		return ret;
 	}
 
+	shb_board_log_pin_summary();
+
 	ret = shb_power_init();
 	if (ret < 0) {
-		LOG_ERR("Power init failed: %d", ret);
+		LOG_ERR("Power event initialization failed: %d", ret);
 		return ret;
 	}
 
 	ret = shb_ble_init();
 	if (ret < 0) {
-		LOG_ERR("BLE init failed: %d", ret);
+		LOG_ERR("BLE initialization failed: %d", ret);
+	} else {
+		LOG_INF("BLE initialized");
 	}
 
 	ret = shb_tmp117_init();
 	if (ret < 0) {
-		LOG_ERR("TMP117 init failed: %d", ret);
+		LOG_ERR("TMP117 missing or misconfigured: %d", ret);
 	} else {
-		shb_update_temperature();
+		shb_log_temperature();
 	}
 
 	ret = shb_bmi270_init(shb_bmi270_irq_wake_cb);
 	if (ret < 0) {
-		LOG_ERR("BMI270 init failed: %d", ret);
+		LOG_ERR("BMI270 chip/config failure: %d", ret);
 	} else {
 		if (IS_ENABLED(CONFIG_SHB_BMI_ANYMOTION_WAKE)) {
 			ret = shb_bmi270_configure_any_motion();
@@ -230,49 +178,43 @@ int main(void)
 				LOG_ERR("BMI270 interrupt setup failed: %d", ret);
 			}
 		}
+
+		LOG_INF("Taking initial BMI270 sample");
+		shb_log_bmi270();
 	}
 
+	LOG_INF("Starting MAX32664 initialization without firmware-driven RSTN");
 	ret = shb_max32664_init();
 	if (ret < 0) {
 		LOG_ERR("MAX32664 init failed: %d", ret);
+		LOG_ERR("If this fails consistently, check that MAX32664 RSTN has a hardware pull-up/shared reset and MFIO defaults high at power-up.");
 	} else {
 		ret = shb_max32664_start_session();
 		if (ret < 0) {
-			LOG_ERR("MAX32664 session start failed: %d", ret);
+			LOG_ERR("MAX32664 vitals session start failed: %d", ret);
 		} else {
 			max_session_enabled = true;
+			LOG_INF("MAX32664 vitals session started");
 		}
 	}
 
-	next_poll_ms = k_uptime_get() + poll_interval_ms;
-	shb_log_snapshot("startup");
+	LOG_INF("Polling TMP117 and BMI270 every %d ms; BLE notifications active when connected",
+		CONFIG_SHB_SENSOR_POLL_INTERVAL_MS);
 
 	while (1) {
-		int64_t now = k_uptime_get();
-		int64_t wait_ms = (next_poll_ms > now) ? (next_poll_ms - now) : 0LL;
+		if (shb_tmp117_is_ready()) {
+			shb_log_temperature();
+		}
+
+		if (shb_bmi270_is_ready()) {
+			shb_log_bmi270();
+		}
 
 		if (max_session_enabled || IS_ENABLED(CONFIG_SHB_BMI_ANYMOTION_WAKE)) {
-			shb_handle_power_events(K_MSEC(wait_ms));
-		} else {
-			k_sleep(K_MSEC(wait_ms));
+			shb_handle_power_events();
 		}
 
-		now = k_uptime_get();
-		if (now >= next_poll_ms) {
-			bool motion_snapshot_logged = false;
-
-			if (shb_tmp117_is_ready()) {
-				shb_update_temperature();
-			}
-
-			if (shb_bmi270_is_ready()) {
-				motion_snapshot_logged = shb_poll_bmi270();
-			}
-
-			if (!motion_snapshot_logged) {
-				shb_log_snapshot("poll");
-			}
-			next_poll_ms = now + poll_interval_ms;
-		}
+		shb_power_enter_idle();
+		k_sleep(K_MSEC(CONFIG_SHB_SENSOR_POLL_INTERVAL_MS));
 	}
 }

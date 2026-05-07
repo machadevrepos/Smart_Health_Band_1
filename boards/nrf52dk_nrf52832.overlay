@@ -5,15 +5,12 @@
 / {
 	zephyr,user {
 		/*
-		 * MAX32664D RSTN is tied to the shared board RSTN / BMD-350
-		 * RESET_N domain. Do not map P0.21 as a firmware-driven GPIO.
-		 *
-		 * The current MAX32664 driver still expects a rstn-gpios property
-		 * at build time, so P0.17 is used here as a no-connect compatibility
-		 * placeholder until the driver is refactored to remove RSTN GPIO
-		 * ownership completely.
+		 * CRITICAL FIX:
+		 * MAX32664D RSTN is tied to the shared board reset / BMD-350 RESET_N
+		 * domain. Do not map P0.21, or any placeholder pin, as firmware-owned
+		 * MAX32664 reset. This firmware uses MFIO only and expects the hub to
+		 * enter application mode after board power-up / hardware reset.
 		 */
-		max32664-rstn-gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
 		max32664-mfio-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
 		haptic-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
 	};

@@ -11,8 +11,8 @@ target_sources(app PRIVATE
   src/main.c
   src/board.c
   src/power.c
+  src/ble.c
   src/bmi270.c
   src/tmp117.c
-  src/max32664.c
-  src/ble.c
+  src/max32664_safe.c
 )
