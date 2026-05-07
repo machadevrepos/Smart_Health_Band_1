@@ -5,9 +5,10 @@
 #include <zephyr/kernel.h>
 
 enum shb_power_event {
-	SHB_POWER_EVENT_BMI_MOTION = BIT(0),
-	SHB_POWER_EVENT_TMP_TIMER = BIT(1),
-	SHB_POWER_EVENT_MAX32664_VITALS = BIT(2),
+	SHB_POWER_EVENT_BMI_MOTION        = BIT(0),
+	SHB_POWER_EVENT_TMP_TIMER         = BIT(1),
+	SHB_POWER_EVENT_MAX32664_VITALS   = BIT(2),
+	SHB_POWER_EVENT_BMI_GESTURE       = BIT(3),
 };
 
 int shb_power_init(void);
