@@ -1,0 +1,7 @@
+description: Bosch BMI270 base binding shim for the Smart Health Band project
+
+compatible: "bosch,bmi270-base"
+
+include:
+  - name: sensor-device.yaml
+  - name: i2c-device.yaml

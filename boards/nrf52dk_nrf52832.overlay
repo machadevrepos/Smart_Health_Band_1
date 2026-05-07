@@ -1,0 +1,72 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
+
+/ {
+	zephyr,user {
+		max32664-rstn-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
+		max32664-mfio-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+		haptic-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+	};
+
+	aliases {
+		tmp-led = &tmp_led;
+		bmi-led = &bmi_led;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		tmp_led: tmp-led {
+			gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;
+			label = "TMP117 LED";
+		};
+
+		bmi_led: bmi-led {
+			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+			label = "BMI270 LED";
+		};
+	};
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 0)>,
+				<NRF_PSEL(TWIM_SDA, 0, 4)>;
+			bias-pull-up;
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 0)>,
+				<NRF_PSEL(TWIM_SDA, 0, 4)>;
+			low-power-enable;
+		};
+	};
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twi";
+	status = "okay";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	tmp117: temperature@48 {
+		compatible = "ti,tmp11x";
+		reg = <0x48>;
+		alert-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+
+	bmi270: imu@68 {
+		compatible = "bosch,bmi270", "bosch,bmi270-base";
+		reg = <0x68>;
+		irq-gpios = <&gpio0 31 GPIO_ACTIVE_LOW>,
+			    <&gpio0 30 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+};

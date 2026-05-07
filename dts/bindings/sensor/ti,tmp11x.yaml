@@ -1,0 +1,28 @@
+description: Texas Instruments TMP116/TMP117/TMP119 temperature sensor
+
+compatible: "ti,tmp11x"
+
+include:
+  - name: sensor-device.yaml
+  - name: i2c-device.yaml
+
+properties:
+  alert-gpios:
+    type: phandle-array
+    description: Optional ALERT pin for threshold or data-ready signaling.
+  odr:
+    type: int
+    default: 0x0000
+    description: TMP11x conversion-rate field value written into CFGR.
+  oversampling:
+    type: int
+    default: 0
+    description: TMP11x averaging field value written into CFGR.
+  alert-polarity:
+    type: boolean
+  alert-mode:
+    type: boolean
+  alert-dr-sel:
+    type: boolean
+  store-attr-values:
+    type: boolean
