@@ -133,7 +133,7 @@ static void shb_handle_max32664_vitals_event(void)
 
 	shb_max32664_get_latest(&latest);
 	if (latest.valid) {
-		(void)shb_board_led_pulse(SHB_LED_BMI, K_MSEC(60));
+		(void)shb_board_led_pulse(SHB_LED_HEART, K_MSEC(60));
 		shb_ble_notify_vitals(latest.hr_x10, latest.spo2_x10,
 				      latest.sys_bp, latest.dia_bp);
 		shb_log_snapshot("vitals");
